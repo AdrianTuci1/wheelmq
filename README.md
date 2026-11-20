@@ -91,10 +91,12 @@ In production, traditional message brokers (Kafka, RabbitMQ) struggle with **del
 
 ## 🚀 One-Line Install & Quickstart
 
-### Method 1: Instant One-Line Installer (Linux & macOS)
+### Method 1: Instant Linux One-Line Installer (Zero Build Tools)
+For Linux environments (Ubuntu, Debian, RHEL, Alpine, Amazon Linux, Arch):
 ```bash
 curl -fsSL https://raw.githubusercontent.com/AdrianTuci1/wheelmq/main/install.sh | sh
 ```
+* Automatically detects your Linux architecture (`amd64` or `arm64`) and downloads the pre-compiled static binary directly via `curl`. Zero compilation or build tools required.
 
 ### Method 2: Build from Source
 ```bash

@@ -1,11 +1,11 @@
-# Stage 1: Build binary statically
+# Stage 1: Compile static Linux binary using musl libc
 FROM alpine:3.19 AS builder
 RUN apk add --no-cache gcc musl-dev make
 WORKDIR /build
 COPY . .
-RUN make clean && make all
+RUN CFLAGS="-Wall -Wextra -Werror -O3 -std=c11 -Iinclude -pthread -static" make clean all
 
-# Stage 2: Minimal runtime image (~3 MB)
+# Stage 2: Ultra-minimal production runtime image (~3 MB)
 FROM alpine:3.19
 RUN apk add --no-cache ca-certificates curl
 COPY --from=builder /build/bin/wheelmq /usr/local/bin/wheelmq

@@ -1,0 +1,28 @@
+name: Linux CI Test Suite
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test-linux:
+    name: Build & Test on Ubuntu Linux
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        compiler: [gcc, clang]
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Build Dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential ${{ matrix.compiler }}
+
+      - name: Compile wheelmq
+        run: make CC=${{ matrix.compiler }} clean all
+
+      - name: Run Test Suite
+        run: make CC=${{ matrix.compiler }} test
