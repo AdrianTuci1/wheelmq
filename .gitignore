@@ -1,0 +1,4 @@
+bin/
+*.o
+*.sock
+.DS_Store
