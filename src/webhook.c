@@ -51,8 +51,10 @@ static bool parse_http_url(const char *url, char *host, size_t host_max, uint16_
         *port = 80;
     }
 
-    strncpy(host, host_port, host_max - 1);
-    host[host_max - 1] = '\0';
+    size_t copy_len = strlen(host_port);
+    if (copy_len >= host_max) copy_len = host_max - 1;
+    memcpy(host, host_port, copy_len);
+    host[copy_len] = '\0';
     return true;
 }
 
@@ -91,7 +93,7 @@ webhook_result_t webhook_dispatch(const char *url, const void *payload, size_t p
     if (inet_pton(AF_INET, host, &srv_addr.sin_addr) <= 0) {
         struct hostent *he = gethostbyname(host);
         if (!he || !he->h_addr_list[0]) {
-            snprintf(res.error_desc, sizeof(res.error_desc), "DNS resolution failed for '%s'", host);
+            snprintf(res.error_desc, sizeof(res.error_desc), "DNS resolution failed for '%.64s'", host);
             close(sock);
             return res;
         }
@@ -99,7 +101,7 @@ webhook_result_t webhook_dispatch(const char *url, const void *payload, size_t p
     }
 
     if (connect(sock, (struct sockaddr *)&srv_addr, sizeof(srv_addr)) < 0) {
-        snprintf(res.error_desc, sizeof(res.error_desc), "Connection refused to %s:%u", host, port);
+        snprintf(res.error_desc, sizeof(res.error_desc), "Connection refused to %.64s:%u", host, port);
         close(sock);
         return res;
     }
@@ -117,7 +119,7 @@ webhook_result_t webhook_dispatch(const char *url, const void *payload, size_t p
 
     if (write(sock, req_header, header_len) < 0 ||
         (payload && payload_len > 0 && write(sock, payload, payload_len) < 0)) {
-        snprintf(res.error_desc, sizeof(res.error_desc), "Write failed to %s", host);
+        snprintf(res.error_desc, sizeof(res.error_desc), "Write failed to %.64s", host);
         close(sock);
         return res;
     }
