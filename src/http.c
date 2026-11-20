@@ -1,8 +1,11 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include "http.h"
 #include "server.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <time.h>
 
 static uint64_t get_time_ms(void) {
