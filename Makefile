@@ -1,5 +1,5 @@
 CC ?= clang
-CFLAGS += -Wall -Wextra -Werror -O3 -std=c11 -Iinclude -pthread -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -Wno-format-truncation
+CFLAGS += -Wall -Wextra -Werror -O3 -std=c11 -Iinclude -pthread -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE
 BIN_DIR = bin
 TEST_DIR = tests
 SRC_DIR = src

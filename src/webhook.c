@@ -29,11 +29,13 @@ static bool parse_http_url(const char *url, char *host, size_t host_max, uint16_
 
     // Extract path
     if (slash) {
-        strncpy(path, slash, path_max - 1);
-        path[path_max - 1] = '\0';
+        size_t slen = strlen(slash);
+        if (slen >= path_max) slen = path_max - 1;
+        memcpy(path, slash, slen);
+        path[slen] = '\0';
     } else {
-        strncpy(path, "/", path_max - 1);
-        path[path_max - 1] = '\0';
+        path[0] = '/';
+        path[1] = '\0';
     }
 
     // Extract host and optional port

@@ -36,9 +36,15 @@ bool http_parse(const char *buf, size_t len, http_request_t *req) {
     char *qmark = strchr(full_path, '?');
     if (qmark) {
         *qmark = '\0';
-        strncpy(req->query, qmark + 1, sizeof(req->query) - 1);
+        size_t qlen = strlen(qmark + 1);
+        if (qlen >= sizeof(req->query)) qlen = sizeof(req->query) - 1;
+        memcpy(req->query, qmark + 1, qlen);
+        req->query[qlen] = '\0';
     }
-    strncpy(req->path, full_path, sizeof(req->path) - 1);
+    size_t plen = strlen(full_path);
+    if (plen >= sizeof(req->path)) plen = sizeof(req->path) - 1;
+    memcpy(req->path, full_path, plen);
+    req->path[plen] = '\0';
 
     // Locate end of headers "\r\n\r\n"
     const char *body_start = strstr(buf, "\r\n\r\n");
