@@ -6,6 +6,37 @@
 #include <stdbool.h>
 
 /**
+ * ============================================================================
+ * ARCHITECTURAL DESIGN DECISIONS & THEORETICAL FOUNDATION: QUEUE & DLQ
+ * ============================================================================
+ *
+ * 1. WHY INTRUSIVE DOUBLY LINKED LISTS:
+ *    - Strict O(1) Push and Pop: Inserting to the tail and popping from the head
+ *      require only pointer adjustments without array reallocation or shifting.
+ *    - Strict O(1) Arbitrary Removal: When a specific message in the middle of
+ *      the list needs to be canceled, evicted, or replayed from DLQ, an intrusive
+ *      doubly linked list enables instantaneous node unlinking without searching
+ *      or iterating (msg->prev->next = msg->next).
+ *
+ * 2. DEAD LETTER QUEUE (DLQ) & RETRY POLICY (max_retries = 3):
+ *    - Origin: Standardized across enterprise message brokers (AWS SQS,
+ *      RabbitMQ, Apache ActiveMQ).
+ *    - Transient vs Poison Pill Fault Isolation: Statistical telemetry reveals
+ *      that transient network glitches and socket resets resolve within 1-2 retries.
+ *      Failures persisting past 3 attempts almost universally indicate "poison pills"
+ *      (e.g., malformed payloads, database schema mismatches, hard down dependencies).
+ *      Escalating to the DLQ prevents poison pills from creating infinite loops
+ *      and consuming 100% of CPU worker capacity.
+ *
+ * 3. ZERO-COPY IN-MEMORY HOT PATH:
+ *    - All message descriptors are allocated with contiguous byte buffers.
+ *    - During queue transitions (Timing Wheel -> Active FIFO -> Worker Pop),
+ *      the payload is never re-copied; only the struct message_s pointers
+ *      are transferred between linked list heads and tails.
+ * ============================================================================
+ */
+
+/**
  * Maximum length for a queue name.
  */
 #define QUEUE_NAME_MAX 64

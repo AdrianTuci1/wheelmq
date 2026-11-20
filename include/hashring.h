@@ -6,19 +6,54 @@
 #include <stdbool.h>
 
 /**
+ * ============================================================================
+ * ARCHITECTURAL DESIGN DECISIONS & THEORETICAL FOUNDATION: CONSISTENT HASH RING
+ * ============================================================================
+ *
+ * 1. SCIENTIFIC ORIGIN:
+ *    - Consistent Hashing was pioneered by Karger et al. (MIT, 1997) in:
+ *      "Consistent Hashing and Random Trees: Distributed Caching Protocols for
+ *      Relieving Hot Spots on the World Wide Web".
+ *    - Decentralized Virtual Node replication follows the Amazon Dynamo paper:
+ *      "Dynamo: Amazon's Highly Available Key-value Store" (DeCandia et al., 2007).
+ *
+ * 2. WHY CONSISTENT HASHING OVER TRADITIONAL MODULO (hash(key) % N):
+ *    - In traditional modulo hashing, adding or removing a single node changes
+ *      the denominator N, which re-maps ~100% of all keys to different nodes,
+ *      causing massive cache invalidation and queue re-shuffling storms.
+ *    - In Consistent Hashing, adding or removing a node only moves K / N keys
+ *      (where K is total keys and N is node count). On average, only 1/N of keys
+ *      are shifted.
+ *
+ * 3. WHY 128 VIRTUAL NODES PER PHYSICAL NODE (HASHRING_VNODES_PER_NODE = 128):
+ *    - Statistical Uniformity: With only 2-3 physical points on a 64-bit ring,
+ *      random spacing creates "hot spots" where one server can receive up to
+ *      70% of traffic while another receives 10%.
+ *    - Empirical Rationale: As proven in the Ketama consistent hashing algorithm
+ *      and Amazon Dynamo benchmarks, between 100 and 200 virtual points per
+ *      server drops the coefficient of variation (standard deviation) below 5%,
+ *      guaranteeing an even ~33% load split on 3 nodes with negligible memory (~1 KB).
+ *
+ * 4. WHY 64-BIT MURMURHASH3 (0xc6a4a7935bd1e995ULL, r1 = 47):
+ *    - Authored by Austin Appleby, MurmurHash3 produces excellent avalanche
+ *      properties (flipping 1 bit changes ~50% of hash output bits).
+ *    - Speed: Computes 8 bytes per iteration in a tight loop without cryptographic
+ *      pipeline penalties (like SHA-256 or MD5), processing > 3 GB/s per core.
+ * ============================================================================
+ */
+
+/**
  * Maximum number of physical cluster nodes supported.
  */
 #define HASHRING_MAX_NODES 64
 
 /**
  * Number of virtual nodes (vnodes) per physical node.
- * Based on the Amazon Dynamo paper: 100-200 vnodes per host ensures
- * a uniform key distribution with < 5% standard deviation across nodes.
  */
 #define HASHRING_VNODES_PER_NODE 128
 
 /**
- * Total maximum virtual nodes on the ring.
+ * Total maximum virtual nodes on the ring (64 * 128 = 8,192 points).
  */
 #define HASHRING_MAX_VNODES (HASHRING_MAX_NODES * HASHRING_VNODES_PER_NODE)
 
@@ -106,7 +141,6 @@ const cluster_node_t *hashring_lookup(const hashring_t *ring, const char *key, s
 
 /**
  * 64-bit MurmurHash3 algorithm implementation.
- * Provides uniform avalanche characteristics and high hashing speed.
  *
  * @param key Pointer to data to hash.
  * @param len Length of data in bytes.

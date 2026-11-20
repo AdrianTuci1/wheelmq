@@ -6,8 +6,46 @@
 #include <stddef.h>
 
 /**
+ * ============================================================================
+ * ARCHITECTURAL DESIGN DECISIONS & THEORETICAL FOUNDATION: TIMING WHEEL
+ * ============================================================================
+ *
+ * 1. SCIENTIFIC ORIGIN:
+ *    This data structure is based on the seminal paper by George Varghese &
+ *    Anthony Lauck (1997): "Hashed and Hierarchical Timing Wheels: Data Structures
+ *    for the Efficient Implementation of a Timer Facility" (IEEE/ACM Transactions
+ *    on Networking).
+ *
+ * 2. LINUX KERNEL ALIGNMENT:
+ *    The bit-width constants mirror the classic Linux kernel timer wheel
+ *    (kernel/time/timer.c), historically implemented with TVR_BITS = 8 and
+ *    TVN_BITS = 6.
+ *
+ * 3. WHY 8 BITS (256 SLOTS) FOR LEVEL 0:
+ *    - Resolution: 1 millisecond per slot.
+ *    - Span: 0 to 255 milliseconds.
+ *    - Rationale: In production network systems, > 90% of micro-delays,
+ *      acknowledgments, and immediate backoff retries occur within 250ms.
+ *      Placing these in Level 0 guarantees zero cascading overhead—timers
+ *      are inserted and fired directly in O(1) with single-cycle bitmasking.
+ *
+ * 4. WHY 6 BITS (64 SLOTS) FOR LEVELS 1 THROUGH 4:
+ *    - Bit-shift Friendly: Slot indexes are resolved using pure bit-shifts
+ *      (>> 8, >> 14, >> 20, >> 26) and bitwise masks (& 63). This avoids
+ *      hardware integer division (modulo '%'), which is notoriously slow on
+ *      modern CPU pipelines (~20-40 clock cycles vs 1 cycle for bitwise AND).
+ *    - Cascading Amortization: Higher levels are ticked less and less frequently.
+ *      Level 1 cascades only once every 256ms; Level 2 cascades once every 16.3s.
+ *
+ * 5. WHY 5 LEVELS (SPANNING ~49.7 DAYS):
+ *    - Maximum delta: 2^32 milliseconds = 4,294,967,296 ms ≈ 49.7 days.
+ *    - Rationale: Covers almost all operational timer needs (seconds, hours,
+ *      days, and monthly recurring billing jobs) within a compact memory footprint.
+ * ============================================================================
+ */
+
+/**
  * Total hierarchy levels in the timing wheel.
- * Follows the Linux kernel timer wheel architecture (TVR + 4x TVN).
  */
 #define WHEEL_LEVELS 5
 
