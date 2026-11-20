@@ -11,6 +11,8 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 
+#define SERVER_IO_BUF_SIZE 65536 // 64 KB per message buffer
+
 static uint64_t get_time_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
@@ -61,15 +63,27 @@ static void *ticker_routine(void *arg) {
     return NULL;
 }
 
+// Helper to extract a whitespace-delimited token
+static const char *extract_token(const char *src, char *dst, size_t dst_max) {
+    while (*src == ' ' || *src == '\t') src++;
+    if (*src == '\0' || *src == '\r' || *src == '\n') return NULL;
+
+    size_t i = 0;
+    while (*src && *src != ' ' && *src != '\t' && *src != '\r' && *src != '\n') {
+        if (i + 1 < dst_max) {
+            dst[i++] = *src;
+        }
+        src++;
+    }
+    dst[i] = '\0';
+    return src;
+}
+
 static void handle_client_command(wheelmq_server_t *srv, const char *cmd_line, char *response, size_t resp_max) {
     char cmd[32];
-    char arg1[64];
-    char arg2[64];
-    char arg3[128];
-
-    int scanned = sscanf(cmd_line, "%31s %63s %63s %127[^\r\n]", cmd, arg1, arg2, arg3);
-    if (scanned < 1) {
-        snprintf(response, resp_max, "ERR invalid_format\r\n");
+    const char *p = extract_token(cmd_line, cmd, sizeof(cmd));
+    if (!p) {
+        snprintf(response, resp_max, "ERR empty_command\r\n");
         return;
     }
 
@@ -78,30 +92,41 @@ static void handle_client_command(wheelmq_server_t *srv, const char *cmd_line, c
     if (strcasecmp(cmd, "PING") == 0) {
         snprintf(response, resp_max, "PONG\r\n");
     } else if (strcasecmp(cmd, "PUSH") == 0) {
-        if (scanned < 3) {
+        // Syntax: PUSH <queue> <delay_ms> <payload...>
+        char qname[64];
+        char delay_str[32];
+
+        p = extract_token(p, qname, sizeof(qname));
+        if (p) p = extract_token(p, delay_str, sizeof(delay_str));
+
+        if (!p) {
             snprintf(response, resp_max, "ERR syntax: PUSH <queue> <delay_ms> <payload>\r\n");
         } else {
-            const char *qname = arg1;
-            uint64_t delay_ms = strtoull(arg2, NULL, 10);
-            const char *payload = (scanned == 4) ? arg3 : "";
-            size_t payload_len = strlen(payload);
+            // Remainder of line is the payload (can be arbitrary size, json, etc.)
+            while (*p == ' ' || *p == '\t') p++;
+            size_t payload_len = 0;
+            while (p[payload_len] && p[payload_len] != '\r' && p[payload_len] != '\n') {
+                payload_len++;
+            }
 
+            uint64_t delay_ms = strtoull(delay_str, NULL, 10);
             uint64_t now = get_time_ms();
             uint64_t msg_id = ++srv->next_msg_id;
             uint64_t scheduled_at = now + delay_ms;
 
-            message_t *msg = message_create(msg_id, qname, payload, payload_len, scheduled_at, 3);
+            message_t *msg = message_create(msg_id, qname, p, payload_len, scheduled_at, 3);
             if (!msg) {
                 snprintf(response, resp_max, "ERR out_of_memory\r\n");
             } else if (delay_ms > 0) {
                 wheel_add(&srv->wheel, msg);
-                snprintf(response, resp_max, "OK id=%llu status=scheduled delay_ms=%llu\r\n",
-                         (unsigned long long)msg_id, (unsigned long long)delay_ms);
+                snprintf(response, resp_max, "OK id=%llu status=scheduled delay_ms=%llu size=%zu\r\n",
+                         (unsigned long long)msg_id, (unsigned long long)delay_ms, payload_len);
             } else {
                 queue_t *q = find_or_create_queue(srv, qname);
                 if (q) {
                     queue_enqueue_ready(q, msg);
-                    snprintf(response, resp_max, "OK id=%llu status=ready\r\n", (unsigned long long)msg_id);
+                    snprintf(response, resp_max, "OK id=%llu status=ready size=%zu\r\n",
+                             (unsigned long long)msg_id, payload_len);
                 } else {
                     message_free(msg);
                     snprintf(response, resp_max, "ERR max_queues_reached\r\n");
@@ -109,14 +134,17 @@ static void handle_client_command(wheelmq_server_t *srv, const char *cmd_line, c
             }
         }
     } else if (strcasecmp(cmd, "POP") == 0) {
-        if (scanned < 2) {
+        // Syntax: POP <queue>
+        char qname[64];
+        p = extract_token(p, qname, sizeof(qname));
+        if (!p) {
             snprintf(response, resp_max, "ERR syntax: POP <queue>\r\n");
         } else {
-            queue_t *q = find_or_create_queue(srv, arg1);
+            queue_t *q = find_or_create_queue(srv, qname);
             message_t *msg = q ? queue_dequeue_ready(q) : NULL;
             if (msg) {
-                snprintf(response, resp_max, "MESSAGE id=%llu retry=%u payload=%.*s\r\n",
-                         (unsigned long long)msg->id, msg->retry_count,
+                snprintf(response, resp_max, "MESSAGE id=%llu retry=%u size=%zu payload=%.*s\r\n",
+                         (unsigned long long)msg->id, msg->retry_count, msg->payload_len,
                          (int)msg->payload_len, (char *)msg->payload);
                 message_free(msg);
             } else {
@@ -124,46 +152,71 @@ static void handle_client_command(wheelmq_server_t *srv, const char *cmd_line, c
             }
         }
     } else if (strcasecmp(cmd, "FAIL") == 0) {
-        if (scanned < 3) {
+        // Syntax: FAIL <queue> <msg_id> [reason...]
+        char qname[64];
+        char id_str[32];
+        p = extract_token(p, qname, sizeof(qname));
+        if (p) p = extract_token(p, id_str, sizeof(id_str));
+
+        if (!p) {
             snprintf(response, resp_max, "ERR syntax: FAIL <queue> <msg_id> [reason]\r\n");
         } else {
-            queue_t *q = find_or_create_queue(srv, arg1);
-            uint64_t msg_id = strtoull(arg2, NULL, 10);
-            const char *reason = (scanned == 4) ? arg3 : "Execution failed";
+            queue_t *q = find_or_create_queue(srv, qname);
+            uint64_t msg_id = strtoull(id_str, NULL, 10);
 
-            message_t *msg = message_create(msg_id, arg1, "failed_job_payload", 18, 0, 3);
+            while (*p == ' ' || *p == '\t') p++;
+            char reason_buf[128] = "Execution failed";
+            if (*p && *p != '\r' && *p != '\n') {
+                size_t rlen = 0;
+                while (p[rlen] && p[rlen] != '\r' && p[rlen] != '\n' && rlen < sizeof(reason_buf) - 1) {
+                    reason_buf[rlen] = p[rlen];
+                    rlen++;
+                }
+                reason_buf[rlen] = '\0';
+            }
+
+            message_t *msg = message_create(msg_id, qname, "failed_job_payload", 18, 0, 3);
             if (msg && q) {
-                queue_move_to_dlq(q, msg, reason);
+                queue_move_to_dlq(q, msg, reason_buf);
                 snprintf(response, resp_max, "OK id=%llu moved_to_dlq reason=\"%s\"\r\n",
-                         (unsigned long long)msg_id, reason);
+                         (unsigned long long)msg_id, reason_buf);
             } else {
                 snprintf(response, resp_max, "ERR cannot_fail_message\r\n");
             }
         }
     } else if (strcasecmp(cmd, "DLQ_LIST") == 0) {
-        if (scanned < 2) {
+        // Syntax: DLQ_LIST <queue>
+        char qname[64];
+        p = extract_token(p, qname, sizeof(qname));
+        if (!p) {
             snprintf(response, resp_max, "ERR syntax: DLQ_LIST <queue>\r\n");
         } else {
-            queue_t *q = find_or_create_queue(srv, arg1);
+            queue_t *q = find_or_create_queue(srv, qname);
             if (!q || queue_dlq_count(q) == 0) {
                 snprintf(response, resp_max, "DLQ_COUNT 0\r\n");
             } else {
                 size_t offset = snprintf(response, resp_max, "DLQ_COUNT %zu\r\n", queue_dlq_count(q));
                 message_t *curr = q->dlq.head;
-                while (curr && offset < resp_max - 128) {
+                while (curr && offset < resp_max - 256) {
                     offset += snprintf(response + offset, resp_max - offset,
-                                       "  - id=%llu reason=\"%s\"\r\n",
-                                       (unsigned long long)curr->id, curr->error_msg);
+                                       "  - id=%llu retries=%u reason=\"%s\"\r\n",
+                                       (unsigned long long)curr->id, curr->retry_count, curr->error_msg);
                     curr = curr->next;
                 }
             }
         }
     } else if (strcasecmp(cmd, "DLQ_REPLAY") == 0) {
-        if (scanned < 3) {
+        // Syntax: DLQ_REPLAY <queue> <msg_id>
+        char qname[64];
+        char id_str[32];
+        p = extract_token(p, qname, sizeof(qname));
+        if (p) p = extract_token(p, id_str, sizeof(id_str));
+
+        if (!p) {
             snprintf(response, resp_max, "ERR syntax: DLQ_REPLAY <queue> <msg_id>\r\n");
         } else {
-            queue_t *q = find_or_create_queue(srv, arg1);
-            uint64_t msg_id = strtoull(arg2, NULL, 10);
+            queue_t *q = find_or_create_queue(srv, qname);
+            uint64_t msg_id = strtoull(id_str, NULL, 10);
             if (q && queue_replay_dlq(q, msg_id)) {
                 snprintf(response, resp_max, "OK replayed id=%llu\r\n", (unsigned long long)msg_id);
             } else {
@@ -171,23 +224,34 @@ static void handle_client_command(wheelmq_server_t *srv, const char *cmd_line, c
             }
         }
     } else if (strcasecmp(cmd, "JOIN") == 0) {
-        if (scanned < 4) {
+        // Syntax: JOIN <peer_id> <peer_ip> <peer_port>
+        char peer_id[64];
+        char peer_ip[64];
+        char peer_port_str[16];
+        p = extract_token(p, peer_id, sizeof(peer_id));
+        if (p) p = extract_token(p, peer_ip, sizeof(peer_ip));
+        if (p) p = extract_token(p, peer_port_str, sizeof(peer_port_str));
+
+        if (!p) {
             snprintf(response, resp_max, "ERR syntax: JOIN <node_id> <ip> <port>\r\n");
         } else {
-            uint16_t port = (uint16_t)atoi(arg3);
-            int idx = hashring_add_node(&srv->ring, arg1, arg2, port);
+            uint16_t port = (uint16_t)atoi(peer_port_str);
+            int idx = hashring_add_node(&srv->ring, peer_id, peer_ip, port);
             if (idx >= 0) {
                 snprintf(response, resp_max, "OK peer_added id=%s nodes=%u vnodes=%u\r\n",
-                         arg1, srv->ring.node_count, srv->ring.vnode_count);
+                         peer_id, srv->ring.node_count, srv->ring.vnode_count);
             } else {
                 snprintf(response, resp_max, "ERR ring_full\r\n");
             }
         }
     } else if (strcasecmp(cmd, "RING_LOOKUP") == 0) {
-        if (scanned < 2) {
+        // Syntax: RING_LOOKUP <key>
+        char key[64];
+        p = extract_token(p, key, sizeof(key));
+        if (!p) {
             snprintf(response, resp_max, "ERR syntax: RING_LOOKUP <key>\r\n");
         } else {
-            const cluster_node_t *owner = hashring_lookup(&srv->ring, arg1, strlen(arg1));
+            const cluster_node_t *owner = hashring_lookup(&srv->ring, key, strlen(key));
             if (owner) {
                 snprintf(response, resp_max, "OWNER node=%s addr=%s:%u is_local=%s\r\n",
                          owner->id, owner->address, owner->port,
@@ -240,7 +304,6 @@ int server_init(wheelmq_server_t *srv, const char *node_id, const char *bind_ip,
 
 int server_run(wheelmq_server_t *srv) {
     if (strlen(srv->unix_socket_path) > 0) {
-        // UNIX Domain Socket mode
         unlink(srv->unix_socket_path);
         srv->server_fd = socket(AF_UNIX, SOCK_STREAM, 0);
         if (srv->server_fd < 0) {
@@ -259,7 +322,6 @@ int server_run(wheelmq_server_t *srv) {
             return -1;
         }
     } else {
-        // TCP mode
         srv->server_fd = socket(AF_INET, SOCK_STREAM, 0);
         if (srv->server_fd < 0) {
             perror("socket(AF_INET)");
@@ -290,7 +352,6 @@ int server_run(wheelmq_server_t *srv) {
 
     srv->running = true;
 
-    // Start background timing wheel ticker thread
     if (pthread_create(&srv->ticker_thread, NULL, ticker_routine, srv) != 0) {
         perror("pthread_create");
         close(srv->server_fd);
@@ -305,8 +366,13 @@ int server_run(wheelmq_server_t *srv) {
                srv->node_id, srv->bind_ip, srv->port);
     }
 
-    char read_buf[2048];
-    char resp_buf[2048];
+    char *read_buf = (char *)malloc(SERVER_IO_BUF_SIZE);
+    char *resp_buf = (char *)malloc(SERVER_IO_BUF_SIZE);
+
+    if (!read_buf || !resp_buf) {
+        fprintf(stderr, "Failed to allocate IO buffers\n");
+        return -1;
+    }
 
     while (srv->running) {
         struct sockaddr_storage client_addr;
@@ -317,15 +383,17 @@ int server_run(wheelmq_server_t *srv) {
             continue;
         }
 
-        ssize_t n = read(client_fd, read_buf, sizeof(read_buf) - 1);
+        ssize_t n = read(client_fd, read_buf, SERVER_IO_BUF_SIZE - 1);
         if (n > 0) {
             read_buf[n] = '\0';
-            handle_client_command(srv, read_buf, resp_buf, sizeof(resp_buf));
+            handle_client_command(srv, read_buf, resp_buf, SERVER_IO_BUF_SIZE);
             write(client_fd, resp_buf, strlen(resp_buf));
         }
         close(client_fd);
     }
 
+    free(read_buf);
+    free(resp_buf);
     return 0;
 }
 

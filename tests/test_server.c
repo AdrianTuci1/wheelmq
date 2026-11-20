@@ -1,11 +1,12 @@
 #include "server.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <assert.h>
 #include <string.h>
 #include <unistd.h>
 
 int main(void) {
-    printf("[TEST] Server Engine (FIFO + Delayed Wheel + DLQ + HashRing)...\n");
+    printf("[TEST] Server Engine (FIFO + Delayed Wheel + DLQ + HashRing + Large Payloads)...\n");
 
     wheelmq_server_t srv;
     int rc = server_init(&srv, "node-primary", "127.0.0.1", 7000, "");
@@ -50,7 +51,21 @@ int main(void) {
     message_free(re_pop);
     printf("  [PASS] Dead Letter Queue failure transition & replay\n");
 
-    // 5. Test Timing Wheel integration
+    // 5. Test Large Payload Support (e.g. 16 KB JSON message)
+    size_t large_size = 16384;
+    char *large_payload = (char *)malloc(large_size);
+    memset(large_payload, 'X', large_size - 1);
+    large_payload[large_size - 1] = '\0';
+
+    message_t *m_large = message_create(999, "large_queue", large_payload, large_size, 0, 1);
+    assert(m_large != NULL);
+    assert(m_large->payload_len == large_size);
+    assert(memcmp(m_large->payload, large_payload, large_size) == 0);
+    message_free(m_large);
+    free(large_payload);
+    printf("  [PASS] Large payload (16 KB) created and freed with zero loss\n");
+
+    // 6. Test Timing Wheel integration
     uint64_t now = srv.wheel.current_time_ms;
     message_t *m_delayed = message_create(2, "orders", "delayed_order", 13, now + 100, 3);
     wheel_add(&srv.wheel, m_delayed);
