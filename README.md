@@ -13,13 +13,14 @@
 ## 📑 Table of Contents
 1. [What is wheelmq?](#-what-is-wheelmq)
 2. [Dual Operating Modes: Pull vs Push (Webhooks)](#-dual-operating-modes-pull-vs-push-webhooks)
-3. [Download & Installation](#-download--installation)
-4. [HTTP REST API Reference (curl examples)](#-http-rest-api-reference)
-5. [TCP Wire Protocol & CLI Usage](#-tcp-wire-protocol--cli-usage)
-6. [Dead Letter Queue (DLQ) & Failure Recovery](#-dead-letter-queue-dlq--failure-recovery)
-7. [Cluster Pairing & P2P Sharding](#-cluster-pairing--p2p-sharding)
-8. [Handling Large Messages](#-handling-large-messages)
-9. [Performance Benchmarks](#-performance-benchmarks)
+3. [One-Line Install & Quickstart](#-one-line-install--quickstart)
+4. [Deployment: Docker, Compose & Kubernetes (Auto-Scaling)](#-deployment-docker-compose--kubernetes)
+5. [HTTP REST API Reference (curl examples)](#-http-rest-api-reference)
+6. [TCP Wire Protocol & CLI Usage](#-tcp-wire-protocol--cli-usage)
+7. [Dead Letter Queue (DLQ) & Failure Recovery](#-dead-letter-queue-dlq--failure-recovery)
+8. [Cluster Pairing & P2P Sharding](#-cluster-pairing--p2p-sharding)
+9. [Handling Large Messages](#-handling-large-messages)
+10. [Performance Benchmarks](#-performance-benchmarks)
 
 ---
 
@@ -83,36 +84,62 @@ In production, traditional message brokers (Kafka, RabbitMQ) struggle with **del
 
 ## 🔄 Dual Operating Modes: Pull vs Push (Webhooks)
 
-`wheelmq` supports two distinct consumption paradigms simultaneously:
-
 * **Pull Mode (Traditional):** Workers periodically fetch jobs using `GET /pop?queue=orders` or the high-speed TCP wire command `POP orders`.
 * **Push Mode (Webhook Dispatcher):** Producers attach a `webhook_url` to the task. When the scheduled delay expires, `wheelmq` **autonomously dispatches an HTTP POST** with the payload to the target service (Stripe / AWS EventBridge style). If the endpoint returns non-2xx or times out, `wheelmq` automatically retries with exponential backoff and escalates to the Dead Letter Queue (DLQ).
 
 ---
 
-## 📦 Download & Installation
+## 🚀 One-Line Install & Quickstart
 
-### Prerequisites
-* Operating System: **Linux** or **macOS**
-* C Compiler: **`gcc`** or **`clang`** (C11 support)
-* Build Tool: **`make`** (No external libraries or runtimes required!)
-
-### Build from Source
+### Method 1: Instant One-Line Installer (Linux & macOS)
 ```bash
-# 1. Clone the repository
-git clone https://github.com/AdrianTuci1/wheelmq.git
-cd wheelmq
-
-# 2. Build the server daemon and CLI client
-make all
-
-# 3. Run the complete automated test suite
-make test
+curl -fsSL https://raw.githubusercontent.com/AdrianTuci1/wheelmq/main/install.sh | sh
 ```
 
-Binaries are generated in `bin/`:
-* `bin/wheelmq` — The unified daemon (~53 KB).
-* `bin/wheelmq-cli` — The standalone command-line client utility (~33 KB).
+### Method 2: Build from Source
+```bash
+git clone https://github.com/AdrianTuci1/wheelmq.git
+cd wheelmq
+make all
+make test
+sudo make install
+```
+
+---
+
+## 🐳 Deployment: Docker, Compose & Kubernetes
+
+### 1. Ultra-Minimal Docker Container (~3 MB)
+Because `wheelmq` is written in pure C without runtimes, its Docker image is only **~3 MB**:
+```bash
+docker build -t wheelmq .
+docker run -d -p 7000:7000 --name wheelmq-node wheelmq
+```
+
+### 2. Instant 3-Node Cluster via Docker Compose
+Spin up a complete multi-node P2P cluster with auto-sharding in seconds:
+```bash
+docker compose up -d
+```
+* Spawns `wheelmq-1` (port 7000), `wheelmq-2` (port 7001), and `wheelmq-3` (port 7002).
+* Nodes discover and pair with each other automatically across Docker's bridge network.
+
+### 3. Kubernetes Deployment & Automated Scaling (HPA)
+Deploy an enterprise-grade, self-healing cluster to Kubernetes:
+```bash
+# 1. Deploy the StatefulSet and Headless Service
+kubectl apply -f deploy/kubernetes/wheelmq.yaml
+
+# 2. Enable automated Horizontal Pod Autoscaling (HPA)
+kubectl apply -f deploy/kubernetes/hpa.yaml
+```
+
+#### How Kubernetes Automated Scaling Works:
+1. **Deterministic DNS Identity:** Uses a `StatefulSet` and Headless Service (`wheelmq-peers`). Pods receive fixed DNS names (`wheelmq-0.wheelmq-peers`, `wheelmq-1.wheelmq-peers`, etc.).
+2. **Auto-Discovery:** When `wheelmq-N` boots, it automatically connects to `wheelmq-0` to join the Consistent Hash Ring.
+3. **Automated Elastic Scaling:**
+   * Run `kubectl scale statefulset wheelmq -n wheelmq --replicas=5` or let the **Horizontal Pod Autoscaler (HPA)** automatically scale pods between 3 and 10 based on CPU or queue traffic.
+   * As new pods spin up, virtual nodes rebalance partitions with **zero downtime and zero lost messages**.
 
 ---
 
@@ -317,6 +344,7 @@ curl -X POST http://localhost:7000/push -d '{
 ## ⚡ Performance Benchmarks
 
 * **Binary Size:** **~53 KB** (includes TCP engine, HTTP REST API, and Webhook dispatcher).
+* **Docker Image Size:** **~3 MB** (minimal Alpine base, zero dependencies).
 * **Memory Footprint:** ~256 bytes per job (~25 MB RAM for 100,000 active scheduled tasks).
 * **Algorithm Complexity:** **$O(1)$ amortized** for insertion, cascading, and expiration.
 * **Build Time:** Compiles in **< 0.5 seconds** with `clang` or `gcc`.

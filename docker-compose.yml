@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  wheelmq-1:
+    build: .
+    container_name: wheelmq-1
+    command: ["--id", "node-1", "--bind", "0.0.0.0", "--port", "7000"]
+    ports:
+      - "7000:7000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7000/stats"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+    networks:
+      - wheelmq-cluster
+
+  wheelmq-2:
+    build: .
+    container_name: wheelmq-2
+    command: ["--id", "node-2", "--bind", "0.0.0.0", "--port", "7000", "--peer", "node-1,wheelmq-1,7000"]
+    ports:
+      - "7001:7000"
+    depends_on:
+      wheelmq-1:
+        condition: service_healthy
+    networks:
+      - wheelmq-cluster
+
+  wheelmq-3:
+    build: .
+    container_name: wheelmq-3
+    command: ["--id", "node-3", "--bind", "0.0.0.0", "--port", "7000", "--peer", "node-1,wheelmq-1,7000"]
+    ports:
+      - "7002:7000"
+    depends_on:
+      wheelmq-1:
+        condition: service_healthy
+    networks:
+      - wheelmq-cluster
+
+networks:
+  wheelmq-cluster:
+    driver: bridge

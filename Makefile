@@ -56,4 +56,16 @@ test: $(TEST_BINS)
 clean:
 	rm -rf $(BIN_DIR)
 
-.PHONY: all test clean
+PREFIX ?= /usr/local
+BINDIR ?= $(PREFIX)/bin
+
+install: all
+	mkdir -p $(DESTDIR)$(BINDIR)
+	install -m 755 $(TARGET) $(DESTDIR)$(BINDIR)/wheelmq
+	install -m 755 $(CLI_TARGET) $(DESTDIR)$(BINDIR)/wheelmq-cli
+
+uninstall:
+	rm -f $(DESTDIR)$(BINDIR)/wheelmq
+	rm -f $(DESTDIR)$(BINDIR)/wheelmq-cli
+
+.PHONY: all test clean install uninstall

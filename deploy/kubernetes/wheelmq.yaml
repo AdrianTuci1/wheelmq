@@ -1,0 +1,90 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: wheelmq
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: wheelmq-peers
+  namespace: wheelmq
+spec:
+  clusterIP: None
+  selector:
+    app: wheelmq
+  ports:
+    - name: tcp-cluster
+      port: 7000
+      targetPort: 7000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: wheelmq-client
+  namespace: wheelmq
+spec:
+  type: ClusterIP
+  selector:
+    app: wheelmq
+  ports:
+    - name: http-rest
+      port: 7000
+      targetPort: 7000
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: wheelmq
+  namespace: wheelmq
+spec:
+  serviceName: wheelmq-peers
+  replicas: 3
+  selector:
+    matchLabels:
+      app: wheelmq
+  template:
+    metadata:
+      labels:
+        app: wheelmq
+    spec:
+      containers:
+        - name: wheelmq
+          image: ghcr.io/adriantuci1/wheelmq:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              if [ "$POD_NAME" = "wheelmq-0" ]; then
+                echo "Starting primary seed node $POD_NAME..."
+                exec wheelmq --id "$POD_NAME" --bind 0.0.0.0 --port 7000
+              else
+                echo "Starting peer node $POD_NAME, joining wheelmq-0..."
+                exec wheelmq --id "$POD_NAME" --bind 0.0.0.0 --port 7000 --peer "wheelmq-0,wheelmq-0.wheelmq-peers.wheelmq.svc.cluster.local,7000"
+              fi
+          ports:
+            - containerPort: 7000
+              name: api-tcp
+          livenessProbe:
+            httpGet:
+              path: /stats
+              port: 7000
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /stats
+              port: 7000
+            initialDelaySeconds: 2
+            periodSeconds: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
