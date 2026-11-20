@@ -1,4 +1,6 @@
 #include "server.h"
+#include "http.h"
+#include "webhook.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,10 +13,6 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 
-/**
- * Socket buffer size for incoming commands and outgoing responses (64 KB).
- */
-#define SERVER_IO_BUF_SIZE 65536
 
 /**
  * Get current wall-clock epoch timestamp in milliseconds.
@@ -25,10 +23,7 @@ static uint64_t get_time_ms(void) {
     return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
 }
 
-/**
- * Look up an existing queue by name or dynamically initialize a new one.
- */
-static queue_t *find_or_create_queue(wheelmq_server_t *srv, const char *name) {
+queue_t *server_find_or_create_queue(wheelmq_server_t *srv, const char *name) {
     for (size_t i = 0; i < srv->queue_count; i++) {
         if (strcmp(srv->queues[i].name, name) == 0) {
             return &srv->queues[i];
@@ -43,7 +38,9 @@ static queue_t *find_or_create_queue(wheelmq_server_t *srv, const char *name) {
 
 /**
  * Background ticker thread routine.
- * Ticks the timing wheel every 5ms and moves expired timers to their ready FIFO queue.
+ * Ticks the timing wheel every 5ms:
+ * - For pull-mode tasks: moves expired timers to their ready FIFO queue.
+ * - For push-mode webhook tasks: dispatches HTTP POST with automatic retry and DLQ escalation.
  */
 static void *ticker_routine(void *arg) {
     wheelmq_server_t *srv = (wheelmq_server_t *)arg;
@@ -58,31 +55,58 @@ static void *ticker_routine(void *arg) {
 
         pthread_mutex_lock(&srv->lock);
         size_t count = wheel_advance(&srv->wheel, now, &expired);
+        pthread_mutex_unlock(&srv->lock);
+
         if (count > 0) {
             message_t *curr = expired.head;
             while (curr) {
                 message_t *next = curr->next;
-                queue_t *q = find_or_create_queue(srv, curr->queue_name);
-                if (q) {
-                    queue_enqueue_ready(q, curr);
+
+                if (curr->webhook_url[0] != '\0') {
+                    // Push Mode: Dispatch HTTP POST webhook
+                    webhook_result_t res = webhook_dispatch(curr->webhook_url, curr->payload, curr->payload_len, 3000);
+
+                    pthread_mutex_lock(&srv->lock);
+                    if (res.success) {
+                        message_free(curr);
+                    } else {
+                        curr->retry_count++;
+                        if (curr->retry_count < curr->max_retries) {
+                            // Exponential backoff: 1s, 2s, 4s...
+                            uint64_t backoff_delay = 1000ULL * (1ULL << curr->retry_count);
+                            curr->scheduled_at_ms = get_time_ms() + backoff_delay;
+                            wheel_add(&srv->wheel, curr);
+                        } else {
+                            // Max retries exhausted: escalate to DLQ
+                            queue_t *q = server_find_or_create_queue(srv, curr->queue_name);
+                            if (q) {
+                                queue_move_to_dlq(q, curr, res.error_desc);
+                            } else {
+                                message_free(curr);
+                            }
+                        }
+                    }
+                    pthread_mutex_unlock(&srv->lock);
                 } else {
-                    message_free(curr);
+                    // Pull Mode: Move to ready FIFO queue
+                    pthread_mutex_lock(&srv->lock);
+                    queue_t *q = server_find_or_create_queue(srv, curr->queue_name);
+                    if (q) {
+                        queue_enqueue_ready(q, curr);
+                    } else {
+                        message_free(curr);
+                    }
+                    pthread_mutex_unlock(&srv->lock);
                 }
                 curr = next;
             }
         }
-        pthread_mutex_unlock(&srv->lock);
     }
     return NULL;
 }
 
 /**
  * Extract the next whitespace-delimited token from a string into dst.
- *
- * @param src Source string pointer.
- * @param dst Destination token buffer.
- * @param dst_max Maximum capacity of destination buffer.
- * @return Pointer to next character in src, or NULL if end of line reached.
  */
 static const char *extract_token(const char *src, char *dst, size_t dst_max) {
     while (*src == ' ' || *src == '\t') src++;
@@ -100,9 +124,20 @@ static const char *extract_token(const char *src, char *dst, size_t dst_max) {
 }
 
 /**
- * Parse and dispatch a single client wire protocol command.
+ * Handle incoming socket buffer:
+ * Detects whether the request is HTTP (GET / POST) or native TCP wire protocol.
  */
 static void handle_client_command(wheelmq_server_t *srv, const char *cmd_line, char *response, size_t resp_max) {
+    // 1. Dual Protocol Check: If HTTP request, route via http_route()
+    if (http_is_request(cmd_line, strlen(cmd_line))) {
+        http_request_t hreq;
+        if (http_parse(cmd_line, strlen(cmd_line), &hreq)) {
+            http_route(srv, &hreq, response, resp_max);
+            return;
+        }
+    }
+
+    // 2. High-speed native TCP wire protocol
     char cmd[32];
     const char *p = extract_token(cmd_line, cmd, sizeof(cmd));
     if (!p) {
@@ -115,7 +150,7 @@ static void handle_client_command(wheelmq_server_t *srv, const char *cmd_line, c
     if (strcasecmp(cmd, "PING") == 0) {
         snprintf(response, resp_max, "PONG\r\n");
     } else if (strcasecmp(cmd, "PUSH") == 0) {
-        // Syntax: PUSH <queue> <delay_ms> <payload...>
+        // Syntax: PUSH <queue> <delay_ms> [webhook_url] <payload...>
         char qname[64];
         char delay_str[32];
 
@@ -126,9 +161,18 @@ static void handle_client_command(wheelmq_server_t *srv, const char *cmd_line, c
             snprintf(response, resp_max, "ERR syntax: PUSH <queue> <delay_ms> <payload>\r\n");
         } else {
             while (*p == ' ' || *p == '\t') p++;
-            size_t payload_len = 0;
-            while (p[payload_len] && p[payload_len] != '\r' && p[payload_len] != '\n') {
-                payload_len++;
+
+            char webhook_url[256] = "";
+            if (strncmp(p, "http://", 7) == 0 || strncmp(p, "https://", 8) == 0) {
+                p = extract_token(p, webhook_url, sizeof(webhook_url));
+                while (p && (*p == ' ' || *p == '\t')) p++;
+            }
+
+            size_t payload_len = p ? 0 : 0;
+            if (p) {
+                while (p[payload_len] && p[payload_len] != '\r' && p[payload_len] != '\n') {
+                    payload_len++;
+                }
             }
 
             uint64_t delay_ms = strtoull(delay_str, NULL, 10);
@@ -137,6 +181,10 @@ static void handle_client_command(wheelmq_server_t *srv, const char *cmd_line, c
             uint64_t scheduled_at = now + delay_ms;
 
             message_t *msg = message_create(msg_id, qname, p, payload_len, scheduled_at, 3);
+            if (strlen(webhook_url) > 0) {
+                message_set_webhook(msg, webhook_url);
+            }
+
             if (!msg) {
                 snprintf(response, resp_max, "ERR out_of_memory\r\n");
             } else if (delay_ms > 0) {
@@ -144,7 +192,7 @@ static void handle_client_command(wheelmq_server_t *srv, const char *cmd_line, c
                 snprintf(response, resp_max, "OK id=%llu status=scheduled delay_ms=%llu size=%zu\r\n",
                          (unsigned long long)msg_id, (unsigned long long)delay_ms, payload_len);
             } else {
-                queue_t *q = find_or_create_queue(srv, qname);
+                queue_t *q = server_find_or_create_queue(srv, qname);
                 if (q) {
                     queue_enqueue_ready(q, msg);
                     snprintf(response, resp_max, "OK id=%llu status=ready size=%zu\r\n",
@@ -156,13 +204,12 @@ static void handle_client_command(wheelmq_server_t *srv, const char *cmd_line, c
             }
         }
     } else if (strcasecmp(cmd, "POP") == 0) {
-        // Syntax: POP <queue>
         char qname[64];
         p = extract_token(p, qname, sizeof(qname));
         if (!p) {
             snprintf(response, resp_max, "ERR syntax: POP <queue>\r\n");
         } else {
-            queue_t *q = find_or_create_queue(srv, qname);
+            queue_t *q = server_find_or_create_queue(srv, qname);
             message_t *msg = q ? queue_dequeue_ready(q) : NULL;
             if (msg) {
                 snprintf(response, resp_max, "MESSAGE id=%llu retry=%u size=%zu payload=%.*s\r\n",
@@ -174,7 +221,6 @@ static void handle_client_command(wheelmq_server_t *srv, const char *cmd_line, c
             }
         }
     } else if (strcasecmp(cmd, "FAIL") == 0) {
-        // Syntax: FAIL <queue> <msg_id> [reason...]
         char qname[64];
         char id_str[32];
         p = extract_token(p, qname, sizeof(qname));
@@ -183,7 +229,7 @@ static void handle_client_command(wheelmq_server_t *srv, const char *cmd_line, c
         if (!p) {
             snprintf(response, resp_max, "ERR syntax: FAIL <queue> <msg_id> [reason]\r\n");
         } else {
-            queue_t *q = find_or_create_queue(srv, qname);
+            queue_t *q = server_find_or_create_queue(srv, qname);
             uint64_t msg_id = strtoull(id_str, NULL, 10);
 
             while (*p == ' ' || *p == '\t') p++;
@@ -207,13 +253,12 @@ static void handle_client_command(wheelmq_server_t *srv, const char *cmd_line, c
             }
         }
     } else if (strcasecmp(cmd, "DLQ_LIST") == 0) {
-        // Syntax: DLQ_LIST <queue>
         char qname[64];
         p = extract_token(p, qname, sizeof(qname));
         if (!p) {
             snprintf(response, resp_max, "ERR syntax: DLQ_LIST <queue>\r\n");
         } else {
-            queue_t *q = find_or_create_queue(srv, qname);
+            queue_t *q = server_find_or_create_queue(srv, qname);
             if (!q || queue_dlq_count(q) == 0) {
                 snprintf(response, resp_max, "DLQ_COUNT 0\r\n");
             } else {
@@ -228,7 +273,6 @@ static void handle_client_command(wheelmq_server_t *srv, const char *cmd_line, c
             }
         }
     } else if (strcasecmp(cmd, "DLQ_REPLAY") == 0) {
-        // Syntax: DLQ_REPLAY <queue> <msg_id>
         char qname[64];
         char id_str[32];
         p = extract_token(p, qname, sizeof(qname));
@@ -237,7 +281,7 @@ static void handle_client_command(wheelmq_server_t *srv, const char *cmd_line, c
         if (!p) {
             snprintf(response, resp_max, "ERR syntax: DLQ_REPLAY <queue> <msg_id>\r\n");
         } else {
-            queue_t *q = find_or_create_queue(srv, qname);
+            queue_t *q = server_find_or_create_queue(srv, qname);
             uint64_t msg_id = strtoull(id_str, NULL, 10);
             if (q && queue_replay_dlq(q, msg_id)) {
                 snprintf(response, resp_max, "OK replayed id=%llu\r\n", (unsigned long long)msg_id);
@@ -246,7 +290,6 @@ static void handle_client_command(wheelmq_server_t *srv, const char *cmd_line, c
             }
         }
     } else if (strcasecmp(cmd, "JOIN") == 0) {
-        // Syntax: JOIN <peer_id> <peer_ip> <peer_port>
         char peer_id[64];
         char peer_ip[64];
         char peer_port_str[16];
@@ -267,7 +310,6 @@ static void handle_client_command(wheelmq_server_t *srv, const char *cmd_line, c
             }
         }
     } else if (strcasecmp(cmd, "RING_LOOKUP") == 0) {
-        // Syntax: RING_LOOKUP <key>
         char key[64];
         p = extract_token(p, key, sizeof(key));
         if (!p) {
@@ -313,10 +355,7 @@ int server_init(wheelmq_server_t *srv, const char *node_id, const char *bind_ip,
     pthread_mutex_init(&srv->lock, NULL);
     hashring_init(&srv->ring);
 
-    // Register local node into hash ring
     hashring_add_node(&srv->ring, node_id, bind_ip, port);
-
-    // Init timing wheel with current epoch ms
     wheel_init(&srv->wheel, get_time_ms());
 
     srv->server_fd = -1;
@@ -384,7 +423,7 @@ int server_run(wheelmq_server_t *srv) {
         printf("[wheelmq] Node '%s' listening on UNIX socket '%s'\n",
                srv->node_id, srv->unix_socket_path);
     } else {
-        printf("[wheelmq] Node '%s' listening on TCP %s:%u\n",
+        printf("[wheelmq] Node '%s' listening on TCP %s:%u (REST API + TCP Wire Protocol Active)\n",
                srv->node_id, srv->bind_ip, srv->port);
     }
 

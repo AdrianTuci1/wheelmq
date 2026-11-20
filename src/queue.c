@@ -37,8 +37,19 @@ message_t *message_create(uint64_t id, const char *queue_name,
     msg->scheduled_at_ms = scheduled_at_ms ? scheduled_at_ms : msg->created_at_ms;
     msg->max_retries = max_retries;
     msg->retry_count = 0;
+    msg->webhook_url[0] = '\0';
 
     return msg;
+}
+
+void message_set_webhook(message_t *msg, const char *url) {
+    if (!msg) return;
+    if (url) {
+        strncpy(msg->webhook_url, url, sizeof(msg->webhook_url) - 1);
+        msg->webhook_url[sizeof(msg->webhook_url) - 1] = '\0';
+    } else {
+        msg->webhook_url[0] = '\0';
+    }
 }
 
 void message_free(message_t *msg) {

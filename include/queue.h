@@ -42,6 +42,11 @@
 #define QUEUE_NAME_MAX 64
 
 /**
+ * Maximum length for an outbound webhook URL.
+ */
+#define WEBHOOK_URL_MAX 256
+
+/**
  * Maximum length for a failure reason description stored in DLQ.
  */
 #define ERROR_MSG_MAX 128
@@ -54,6 +59,8 @@ typedef struct message_s {
     char queue_name[QUEUE_NAME_MAX];    /**< Destination queue name */
     uint8_t *payload;                   /**< Heap-allocated message payload buffer */
     size_t payload_len;                 /**< Payload size in bytes */
+
+    char webhook_url[WEBHOOK_URL_MAX];  /**< Optional outbound webhook URL (Push Mode) */
 
     uint64_t created_at_ms;             /**< Epoch timestamp (ms) when message was created */
     uint64_t scheduled_at_ms;           /**< Epoch timestamp (ms) when message becomes ready */
@@ -98,6 +105,14 @@ typedef struct {
 message_t *message_create(uint64_t id, const char *queue_name,
                           const void *payload, size_t payload_len,
                           uint64_t scheduled_at_ms, uint32_t max_retries);
+
+/**
+ * Attach an outbound webhook target URL to a message for Push-Mode delivery.
+ *
+ * @param msg Target message pointer.
+ * @param url HTTP URL to dispatch the message payload to.
+ */
+void message_set_webhook(message_t *msg, const char *url);
 
 /**
  * Free a message and its internal payload buffer.

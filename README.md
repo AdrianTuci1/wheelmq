@@ -1,7 +1,7 @@
 # 🎡 wheelmq
 
 > **High-Performance P2P Distributed Timing & Queue Engine written in pure C11.**  
-> Zero external dependencies · ~36 KB static binary · $O(1)$ Hierarchical Timing Wheel · Consistent Hash Ring Sharding · Dead Letter Queue (DLQ)
+> Zero external dependencies · ~53 KB static binary · $O(1)$ Hierarchical Timing Wheel · Consistent Hash Ring Sharding · Dead Letter Queue (DLQ) · Embedded HTTP REST API & Webhook Dispatcher
 
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen)](#)
 [![Language](https://img.shields.io/badge/language-C11-blue.svg)](#)
@@ -12,13 +12,14 @@
 
 ## 📑 Table of Contents
 1. [What is wheelmq?](#-what-is-wheelmq)
-2. [Download & Installation](#-download--installation)
-3. [Quickstart Guide](#-quickstart-guide)
-4. [Dead Letter Queue (DLQ) & Failure Recovery](#-dead-letter-queue-dlq--failure-recovery)
-5. [Cluster Pairing & P2P Sharding](#-cluster-pairing--p2p-sharding)
-6. [Handling Large Messages](#-handling-large-messages)
-7. [Full Command & Protocol Reference](#-full-command--protocol-reference)
-8. [Performance Benchmarks](#-performance-benchmarks)
+2. [Dual Operating Modes: Pull vs Push (Webhooks)](#-dual-operating-modes-pull-vs-push-webhooks)
+3. [Download & Installation](#-download--installation)
+4. [HTTP REST API Reference (curl examples)](#-http-rest-api-reference)
+5. [TCP Wire Protocol & CLI Usage](#-tcp-wire-protocol--cli-usage)
+6. [Dead Letter Queue (DLQ) & Failure Recovery](#-dead-letter-queue-dlq--failure-recovery)
+7. [Cluster Pairing & P2P Sharding](#-cluster-pairing--p2p-sharding)
+8. [Handling Large Messages](#-handling-large-messages)
+9. [Performance Benchmarks](#-performance-benchmarks)
 
 ---
 
@@ -26,17 +27,18 @@
 
 In production, traditional message brokers (Kafka, RabbitMQ) struggle with **delayed / scheduled tasks** at high throughput, while legacy cron daemons are notorious single points of failure (SPOF). To achieve high availability, DevOps teams are often forced to operate heavy distributed clusters (ZooKeeper, etcd, Redis, or PostgreSQL).
 
-**`wheelmq`** bundles the four essential pillars of resilient backend infrastructure into a **single, ~36 KB static C binary**:
+**`wheelmq`** bundles the essential pillars of resilient backend infrastructure into a **single, ~53 KB static C binary**:
 
 1. **Strict FIFO Message Queue** — Reliable, in-order task distribution to workers.
 2. **Hierarchical Timing Wheel ($O(1)$)** — Tracks and cascades millions of future tasks (due in milliseconds, minutes, or days) with zero database scanning overhead.
-3. **Dead Letter Queue (DLQ) & Auto-Retry** — When downstream workers fail, tasks are preserved with contextual error logs and can be inspected and replayed on demand.
+3. **Dead Letter Queue (DLQ) & Auto-Retry** — When downstream workers or webhooks fail, tasks are preserved with contextual error logs and can be inspected and replayed on demand.
 4. **P2P Sharding via Consistent Hash Ring** — 1 node owns 100% of the ring; multiple nodes dynamically partition queues with zero master bottleneck.
+5. **Embedded HTTP REST API & Webhooks** — Accepts standard JSON `curl` requests on the same port and can autonomously push webhooks to target endpoints upon task expiration.
 
 ```
                                 PRODUCER
                                    │
-              PUSH queue [delay_ms] payload
+              POST /push (JSON) or TCP PUSH queue [delay_ms]
                                    │
                                    ▼
         ┌────────────────────────────────────────────────────────┐
@@ -59,19 +61,32 @@ In production, traditional message brokers (Kafka, RabbitMQ) struggle with **del
          │  Level 4: 64 x 18.6h   ├──────────────┘
          └────────────────────────┘
                                    │
-                                WORKER
-                                   │
                      ┌─────────────┴─────────────┐
-                  SUCCESS                     FAILURE
+               Has Webhook URL?               Pull Mode
+                    YES                          NO
                      │                           │
-               [Ack & Done]                Retries < Max?
-                                           ┌─────┴─────┐
-                                          YES          NO
-                                           │           │
-                                     [Re-queue]   ┌────▼────┐
-                                     (Backoff)    │   DLQ   │
-                                                  └─────────┘
+          [HTTP POST Dispatch]             [Worker Pop]
+                     │                           │
+         ┌───────────┴───────────┐         [Worker Ack]
+      SUCCESS                 FAILURE
+         │                       │
+   [Job Done]              Retries < Max?
+                           ┌─────┴─────┐
+                          YES          NO
+                           │           │
+                     [Re-queue]   ┌────▼────┐
+                     (Backoff)    │   DLQ   │
+                                  └─────────┘
 ```
+
+---
+
+## 🔄 Dual Operating Modes: Pull vs Push (Webhooks)
+
+`wheelmq` supports two distinct consumption paradigms simultaneously:
+
+* **Pull Mode (Traditional):** Workers periodically fetch jobs using `GET /pop?queue=orders` or the high-speed TCP wire command `POP orders`.
+* **Push Mode (Webhook Dispatcher):** Producers attach a `webhook_url` to the task. When the scheduled delay expires, `wheelmq` **autonomously dispatches an HTTP POST** with the payload to the target service (Stripe / AWS EventBridge style). If the endpoint returns non-2xx or times out, `wheelmq` automatically retries with exponential backoff and escalates to the Dead Letter Queue (DLQ).
 
 ---
 
@@ -95,75 +110,163 @@ make all
 make test
 ```
 
-Binaries will be placed in `bin/`:
-* `bin/wheelmq` — The high-performance server daemon (~36 KB).
+Binaries are generated in `bin/`:
+* `bin/wheelmq` — The unified daemon (~53 KB).
 * `bin/wheelmq-cli` — The standalone command-line client utility (~33 KB).
 
 ---
 
-## 🚀 Quickstart Guide
+## 🌐 HTTP REST API Reference
 
-### Step 1: Start a `wheelmq` Node
-Run the daemon on TCP port `7000`:
+`wheelmq` features an embedded zero-overhead HTTP/1.1 server. You can interact with it using `curl`, Postman, or native HTTP clients in any programming language (Python, Node.js, Go, Rust, Java).
+
+### Start the Server:
 ```bash
 ./bin/wheelmq --id node-1 --port 7000
 ```
-> *Optionally bind to a UNIX domain socket for ultra-fast local IPC:*  
-> `./bin/wheelmq --id node-1 --socket /tmp/wheelmq.sock`
 
-### Step 2: Push an Immediate Message (FIFO)
+### 1. Enqueue an Immediate Task (FIFO)
 ```bash
-./bin/wheelmq-cli -p 7000 push orders 0 "{\"order_id\": 1001, \"amount\": 49.99}"
+curl -X POST http://localhost:7000/push \
+  -H "Content-Type: application/json" \
+  -d '{
+    "queue": "orders",
+    "delay_ms": 0,
+    "payload": {"order_id": 1001, "amount": 49.99}
+  }'
 ```
-*Server Output:* `OK id=1 status=ready size=40`
-
-### Step 3: Push a Scheduled / Delayed Message
-Schedule a message to become ready in **5 seconds** (5000 ms):
-```bash
-./bin/wheelmq-cli -p 7000 push orders 5000 "{\"order_id\": 1002, \"reminder\": true}"
+*Response:*
+```json
+{"status":"ready","id":1,"queue":"orders","has_webhook":false}
 ```
-*Server Output:* `OK id=2 status=scheduled delay_ms=5000 size=40`  
-*(The message enters the Timing Wheel and is automatically cascaded into the ready FIFO queue after 5000 ms).*
 
-### Step 4: Consume Messages from Queue (`POP`)
+### 2. Schedule a Delayed Task ($O(1)$ Timing Wheel)
 ```bash
+curl -X POST http://localhost:7000/push \
+  -H "Content-Type: application/json" \
+  -d '{
+    "queue": "orders",
+    "delay_ms": 5000,
+    "payload": {"order_id": 1002, "reminder": true}
+  }'
+```
+*Response:*
+```json
+{"status":"scheduled","id":2,"queue":"orders","delay_ms":5000,"has_webhook":false}
+```
+
+### 3. Schedule an Autonomous Webhook Dispatch (Push Mode)
+Schedule an HTTP POST to be dispatched to your webhook receiver in 10 seconds:
+```bash
+curl -X POST http://localhost:7000/push \
+  -H "Content-Type: application/json" \
+  -d '{
+    "queue": "notifications",
+    "delay_ms": 10000,
+    "webhook_url": "http://127.0.0.1:8080/events/order-completed",
+    "payload": {"order_id": 1003, "customer_email": "alice@example.com"}
+  }'
+```
+*Response:*
+```json
+{"status":"scheduled","id":3,"queue":"notifications","delay_ms":10000,"has_webhook":true}
+```
+
+### 4. Consume Next Task (`POP`)
+```bash
+curl "http://localhost:7000/pop?queue=orders"
+```
+*Response:*
+```json
+{
+  "status": "ok",
+  "id": 1,
+  "queue": "orders",
+  "retry_count": 0,
+  "payload": {"order_id": 1001, "amount": 49.99}
+}
+```
+
+### 5. Inspect Cluster & Queue Statistics
+```bash
+curl http://localhost:7000/stats
+```
+*Response:*
+```json
+{
+  "node_id": "node-1",
+  "queues": 2,
+  "ready_messages": 1,
+  "dlq_messages": 0,
+  "active_timers": 1,
+  "ring_nodes": 1,
+  "ring_vnodes": 128
+}
+```
+
+### 6. Inspect Dead Letter Queue (DLQ)
+```bash
+curl "http://localhost:7000/dlq?queue=orders"
+```
+*Response:*
+```json
+{
+  "queue": "orders",
+  "count": 1,
+  "messages": [
+    {"id": 404, "retries": 3, "reason": "Webhook returned HTTP 500"}
+  ]
+}
+```
+
+### 7. Replay a Failed Message from DLQ
+```bash
+curl -X POST http://localhost:7000/dlq/replay \
+  -H "Content-Type: application/json" \
+  -d '{"queue": "orders", "id": 404}'
+```
+*Response:*
+```json
+{"status":"ok","replayed_id":404}
+```
+
+---
+
+## ⚡ TCP Wire Protocol & CLI Usage
+
+For ultra-low latency internal worker loops, `wheelmq` supports a high-speed line-delimited ASCII protocol (Redis style):
+
+```bash
+# Push an immediate task
+./bin/wheelmq-cli -p 7000 push orders 0 "{\"order_id\": 1001}"
+
+# Push a delayed task
+./bin/wheelmq-cli -p 7000 push orders 5000 "{\"order_id\": 1002}"
+
+# Push a webhook task
+./bin/wheelmq-cli -p 7000 push orders 5000 http://127.0.0.1:8080/hook "{\"order_id\": 1003}"
+
+# Consume task from queue
 ./bin/wheelmq-cli -p 7000 pop orders
-```
-*Response:*  
-`MESSAGE id=1 retry=0 size=40 payload={"order_id": 1001, "amount": 49.99}`
 
-If the queue is empty, the server returns `EMPTY`.
+# Mark task as failed (escalates to DLQ)
+./bin/wheelmq-cli -p 7000 fail orders 101 "Database deadlocked"
+
+# List DLQ entries
+./bin/wheelmq-cli -p 7000 dlq_list orders
+
+# Replay dead task
+./bin/wheelmq-cli -p 7000 dlq_replay orders 101
+```
 
 ---
 
 ## 🛡️ Dead Letter Queue (DLQ) & Failure Recovery
 
-When worker execution fails (e.g. database timeout or third-party API outage), jobs are not dropped. They are moved into the **Dead Letter Queue (DLQ)** along with the root cause for inspection and recovery.
-
-### 1. Mark a Message as Failed (`FAIL`)
-```bash
-./bin/wheelmq-cli -p 7000 fail orders 101 "Stripe payment gateway 504 timeout"
-```
-*Response:* `OK id=101 moved_to_dlq reason="Stripe payment gateway 504 timeout"`
-
-### 2. Inspect the Dead Letter Queue (`DLQ_LIST`)
-```bash
-./bin/wheelmq-cli -p 7000 dlq_list orders
-```
-*Sample Output:*
-```text
-DLQ_COUNT 2
-  - id=101 retries=0 reason="Stripe payment gateway 504 timeout"
-  - id=104 retries=3 reason="Downstream service unavailable"
-```
-
-### 3. Replay a Failed Message (`DLQ_REPLAY`)
-Once downstream connectivity is restored, replay the failed job back into the active FIFO queue:
-```bash
-./bin/wheelmq-cli -p 7000 dlq_replay orders 101
-```
-*Response:* `OK replayed id=101`  
-*(Job 101 is now immediately available in the active FIFO queue and will be returned by the next `pop orders` call).*
+When downstream processing or webhooks fail:
+1. **Transient Errors:** Tasks are retried with exponential backoff ($1\text{s}, 2\text{s}, 4\text{s}$).
+2. **Persistent Failures:** Once `max_retries` (default: 3) is reached, the task is transferred to the Dead Letter Queue (DLQ) alongside the error description.
+3. **Zero Loss & Replay:** Operators can inspect failed tasks via `GET /dlq` and restore them to active processing with a single `POST /dlq/replay`.
 
 ---
 
@@ -171,67 +274,49 @@ Once downstream connectivity is restored, replay the failed job back into the ac
 
 `wheelmq` is **decentralized and leaderless**. It does not require ZooKeeper, etcd, or Consul.
 
-### Method A: At Node Startup (via `--peer`)
-Start a second node on port `7001` and connect it to `node-1`:
+### Join at Node Startup:
 ```bash
 ./bin/wheelmq --id node-2 --port 7001 --peer node-1,127.0.0.1,7000
 ```
 
-### Method B: Dynamically via CLI (`JOIN`)
-If a node is already running, join a peer on the fly:
+### Join on the Fly via CLI:
 ```bash
 ./bin/wheelmq-cli -p 7000 join node-2 127.0.0.1 7001
 ```
-*Response:* `OK peer_added id=node-2 nodes=2 vnodes=256`
 
-### Lookup Queue Ownership (`RING_LOOKUP`)
-Every queue or key is deterministically assigned to a node using MurmurHash3 across 128 virtual nodes:
+### Lookup Queue Partition Ownership:
 ```bash
-./bin/wheelmq-cli -p 7000 ring_lookup orders
+curl "http://localhost:7000/ring?key=orders"
 ```
-*Response:* `OWNER node=node-2 addr=127.0.0.1:7001 is_local=false`
+*Response:*
+```json
+{
+  "key": "orders",
+  "owner_node": "node-2",
+  "address": "127.0.0.1:7001",
+  "is_local": false
+}
+```
 
 ---
 
 ## 🐘 Handling Large Messages
 
-### 1. In-Memory Payloads (Up to 64 KB per message)
-`wheelmq` supports payloads up to **64 KB** inline in memory by default. This accommodates complex JSON objects, webhook payloads, and batch commands without truncation.
-
-### 2. Large Datasets & Multi-Megabyte Blobs
-In high-throughput distributed systems, sending massive files (e.g. 100 MB videos, 4K images, raw database dumps) directly through queue memory is an anti-pattern that causes memory bloat and head-of-line blocking.
-
-The recommended industry approach is the **Claim-Check Pattern**:
-1. Store the large artifact in dedicated object storage (e.g., S3, MinIO, or local disk).
-2. Push only the metadata and reference URI to `wheelmq`:
+* **In-Memory Payloads (Up to 64 KB per message):** `wheelmq` natively supports payloads up to **64 KB** inline in RAM.
+* **Large Datasets & Files (Claim-Check Pattern):** For multi-megabyte or gigabyte files, store the blob in S3/MinIO and pass the reference URI:
 ```bash
-./bin/wheelmq-cli -p 7000 push video-transcode 0 "{\"file_uri\": \"s3://bucket/4k_footage.mp4\", \"target_res\": \"1080p\"}"
+curl -X POST http://localhost:7000/push -d '{
+  "queue": "transcoding",
+  "delay_ms": 0,
+  "payload": {"file_uri": "s3://media-bucket/raw_4k.mp4"}
+}'
 ```
-The worker dequeues the small claim ticket in microseconds and streams the large payload directly from storage during execution.
-
----
-
-## 📖 Full Command & Protocol Reference
-
-`wheelmq` uses a lightweight, line-delimited text protocol:
-
-| CLI Command | Wire Protocol Syntax | Description |
-| :--- | :--- | :--- |
-| `push <queue> <delay_ms> <payload>` | `PUSH <queue> <delay_ms> <payload...>` | Enqueue a message. If `delay_ms=0` goes to FIFO; if `delay_ms>0` enters Timing Wheel. |
-| `pop <queue>` | `POP <queue>` | Dequeue the oldest ready message from FIFO. |
-| `fail <queue> <msg_id> [reason]` | `FAIL <queue> <msg_id> [reason...]` | Mark message as failed; transfers to DLQ. |
-| `dlq_list <queue>` | `DLQ_LIST <queue>` | Inspect dead-lettered messages and error reasons. |
-| `dlq_replay <queue> <msg_id>` | `DLQ_REPLAY <queue> <msg_id>` | Reintroduce a dead-lettered job back to active FIFO. |
-| `join <id> <ip> <port>` | `JOIN <id> <ip> <port>` | Register a cluster peer into the Consistent Hash Ring. |
-| `ring_lookup <key>` | `RING_LOOKUP <key>` | Query which cluster node owns a given queue or key. |
-| `stats` | `STATS` | Output active queues, ready count, DLQ count, timers, and cluster node count. |
-| *(ping)* | `PING` | Connection health check (returns `PONG`). |
 
 ---
 
 ## ⚡ Performance Benchmarks
 
-* **Binary Size:** **~36 KB** (clean static footprint, zero runtime bloat).
+* **Binary Size:** **~53 KB** (includes TCP engine, HTTP REST API, and Webhook dispatcher).
 * **Memory Footprint:** ~256 bytes per job (~25 MB RAM for 100,000 active scheduled tasks).
 * **Algorithm Complexity:** **$O(1)$ amortized** for insertion, cascading, and expiration.
 * **Build Time:** Compiles in **< 0.5 seconds** with `clang` or `gcc`.

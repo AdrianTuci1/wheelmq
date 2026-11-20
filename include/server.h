@@ -45,9 +45,14 @@
 #define MAX_QUEUES 256
 
 /**
+ * Socket buffer size for incoming commands and outgoing responses (64 KB).
+ */
+#define SERVER_IO_BUF_SIZE 65536
+
+/**
  * wheelmq server daemon instance state.
  */
-typedef struct {
+struct wheelmq_server_s {
     char node_id[HASHRING_NODE_ID_LEN];  /**< Unique cluster node identifier */
     char bind_ip[64];                    /**< TCP bind IP address (e.g. 127.0.0.1 or 0.0.0.0) */
     uint16_t port;                       /**< TCP bind port (e.g. 7000) */
@@ -65,7 +70,9 @@ typedef struct {
 
     int server_fd;                       /**< Listening socket file descriptor */
     uint64_t next_msg_id;                /**< Monotonically increasing message ID generator */
-} wheelmq_server_t;
+};
+
+typedef struct wheelmq_server_s wheelmq_server_t;
 
 /**
  * Initialize a wheelmq server instance.
@@ -101,5 +108,14 @@ void server_stop(wheelmq_server_t *srv);
  * @param srv Pointer to wheelmq_server_t structure.
  */
 void server_destroy(wheelmq_server_t *srv);
+
+/**
+ * Thread-safe lookup or dynamic creation of a queue container by name.
+ *
+ * @param srv Server instance.
+ * @param name Queue name identifier.
+ * @return Pointer to queue_t or NULL if max capacity reached.
+ */
+queue_t *server_find_or_create_queue(wheelmq_server_t *srv, const char *name);
 
 #endif // WHEELMQ_SERVER_H

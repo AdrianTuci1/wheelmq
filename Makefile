@@ -5,7 +5,7 @@ TEST_DIR = tests
 SRC_DIR = src
 TOOLS_DIR = tools
 
-LIB_SRCS = $(SRC_DIR)/hashring.c $(SRC_DIR)/queue.c $(SRC_DIR)/wheel.c $(SRC_DIR)/server.c
+LIB_SRCS = $(SRC_DIR)/hashring.c $(SRC_DIR)/queue.c $(SRC_DIR)/wheel.c $(SRC_DIR)/webhook.c $(SRC_DIR)/http.c $(SRC_DIR)/server.c
 LIB_OBJS = $(patsubst $(SRC_DIR)/%.c, $(BIN_DIR)/%.o, $(LIB_SRCS))
 
 TARGET = $(BIN_DIR)/wheelmq
