@@ -1,0 +1,182 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "id": 1,
+      "title": "Healthy Nodes",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "sum(wheelmq_up)",
+          "legendFormat": "Nodes Up",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "values": false }
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "id": 2,
+      "title": "Total Ready Messages (FIFO)",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "sum(wheelmq_ready_messages_total)",
+          "legendFormat": "Ready",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "values": false }
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "id": 3,
+      "title": "Active Timing Wheel Timers",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "sum(wheelmq_delayed_timers_total)",
+          "legendFormat": "Delayed",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "values": false }
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "id": 4,
+      "title": "Dead Letter Queue (DLQ)",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "sum(wheelmq_dead_letter_total)",
+          "legendFormat": "DLQ Messages",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "values": false }
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "id": 5,
+      "title": "Ready Messages Over Time (Per Queue)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "wheelmq_queue_ready",
+          "legendFormat": "{{queue}} on {{node}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "id": 6,
+      "title": "Active Timing Wheel Timers Over Time",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "wheelmq_delayed_timers_total",
+          "legendFormat": "Node {{node}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "id": 7,
+      "title": "Dead Letter Queue (DLQ) by Queue",
+      "type": "bargauge",
+      "targets": [
+        {
+          "expr": "wheelmq_queue_dlq",
+          "legendFormat": "{{queue}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1 },
+              { "color": "red", "value": 10 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "id": 8,
+      "title": "Hash Ring Virtual Nodes Distribution",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "wheelmq_cluster_vnodes_total",
+          "legendFormat": "vnodes on {{node}}",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["wheelmq", "queue", "timing-wheel", "p2p"],
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "title": "wheelmq Cluster Overview",
+  "uid": "wheelmq-overview"
+}

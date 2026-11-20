@@ -136,6 +136,20 @@ static void send_http_json(char *resp_out, size_t resp_max, int status_code, con
              status_code, status_msg, body_len, json_body);
 }
 
+static void send_http_text(char *resp_out, size_t resp_max, int status_code, const char *status_msg,
+                           const char *content_type, const char *body) {
+    size_t body_len = strlen(body);
+    snprintf(resp_out, resp_max,
+             "HTTP/1.1 %d %s\r\n"
+             "Server: wheelmq/1.0\r\n"
+             "Content-Type: %s\r\n"
+             "Content-Length: %zu\r\n"
+             "Access-Control-Allow-Origin: *\r\n"
+             "Connection: close\r\n\r\n"
+             "%s",
+             status_code, status_msg, content_type, body_len, body);
+}
+
 void http_route(wheelmq_server_t *srv, const http_request_t *req, char *resp_out, size_t resp_max) {
     pthread_mutex_lock(&srv->lock);
 
@@ -160,6 +174,62 @@ void http_route(wheelmq_server_t *srv, const http_request_t *req, char *resp_out
                  srv->node_id, srv->queue_count, total_ready, total_dlq,
                  srv->wheel.total_timer_count, srv->ring.node_count, srv->ring.vnode_count);
         send_http_json(resp_out, resp_max, 200, "OK", json);
+    }
+    else if (strcmp(req->path, "/metrics") == 0) {
+        size_t total_ready = 0;
+        size_t total_dlq = 0;
+        for (size_t i = 0; i < srv->queue_count; i++) {
+            total_ready += queue_ready_count(&srv->queues[i]);
+            total_dlq += queue_dlq_count(&srv->queues[i]);
+        }
+
+        char metrics[SERVER_IO_BUF_SIZE / 2];
+        size_t offset = 0;
+
+        offset += snprintf(metrics + offset, sizeof(metrics) - offset,
+            "# HELP wheelmq_up Whether the wheelmq node is healthy and online\n"
+            "# TYPE wheelmq_up gauge\n"
+            "wheelmq_up{node=\"%s\"} 1\n\n"
+            "# HELP wheelmq_ready_messages_total Current number of ready messages waiting in FIFO queues\n"
+            "# TYPE wheelmq_ready_messages_total gauge\n"
+            "wheelmq_ready_messages_total{node=\"%s\"} %zu\n\n"
+            "# HELP wheelmq_delayed_timers_total Current number of active timing wheel timers\n"
+            "# TYPE wheelmq_delayed_timers_total gauge\n"
+            "wheelmq_delayed_timers_total{node=\"%s\"} %zu\n\n"
+            "# HELP wheelmq_dead_letter_total Current number of failed messages in Dead Letter Queue (DLQ)\n"
+            "# TYPE wheelmq_dead_letter_total gauge\n"
+            "wheelmq_dead_letter_total{node=\"%s\"} %zu\n\n"
+            "# HELP wheelmq_cluster_nodes_total Number of active physical nodes in hash ring\n"
+            "# TYPE wheelmq_cluster_nodes_total gauge\n"
+            "wheelmq_cluster_nodes_total{node=\"%s\"} %u\n\n"
+            "# HELP wheelmq_cluster_vnodes_total Number of virtual nodes in consistent hash ring\n"
+            "# TYPE wheelmq_cluster_vnodes_total gauge\n"
+            "wheelmq_cluster_vnodes_total{node=\"%s\"} %u\n\n"
+            "# HELP wheelmq_queue_ready Current ready messages partitioned by queue name\n"
+            "# TYPE wheelmq_queue_ready gauge\n",
+            srv->node_id, srv->node_id, total_ready,
+            srv->node_id, srv->wheel.total_timer_count,
+            srv->node_id, total_dlq,
+            srv->node_id, srv->ring.node_count,
+            srv->node_id, srv->ring.vnode_count);
+
+        for (size_t i = 0; i < srv->queue_count && offset < sizeof(metrics) - 256; i++) {
+            offset += snprintf(metrics + offset, sizeof(metrics) - offset,
+                "wheelmq_queue_ready{node=\"%s\",queue=\"%s\"} %zu\n",
+                srv->node_id, srv->queues[i].name, queue_ready_count(&srv->queues[i]));
+        }
+
+        offset += snprintf(metrics + offset, sizeof(metrics) - offset,
+            "\n# HELP wheelmq_queue_dlq Current DLQ messages partitioned by queue name\n"
+            "# TYPE wheelmq_queue_dlq gauge\n");
+
+        for (size_t i = 0; i < srv->queue_count && offset < sizeof(metrics) - 256; i++) {
+            offset += snprintf(metrics + offset, sizeof(metrics) - offset,
+                "wheelmq_queue_dlq{node=\"%s\",queue=\"%s\"} %zu\n",
+                srv->node_id, srv->queues[i].name, queue_dlq_count(&srv->queues[i]));
+        }
+
+        send_http_text(resp_out, resp_max, 200, "OK", "text/plain; version=0.0.4; charset=utf-8", metrics);
     }
     else if (strcmp(req->path, "/push") == 0) {
         char queue[64] = "default";

@@ -259,6 +259,36 @@ curl -X POST http://localhost:7000/dlq/replay \
 {"status":"ok","replayed_id":404}
 ```
 
+### 8. Prometheus & Grafana Metrics Exposition
+`wheelmq` exposes a native Prometheus scraper endpoint at `/metrics`:
+```bash
+curl http://localhost:7000/metrics
+```
+*Response:*
+```text
+# HELP wheelmq_up Whether the wheelmq node is healthy and online
+# TYPE wheelmq_up gauge
+wheelmq_up{node="node-1"} 1
+
+# HELP wheelmq_ready_messages_total Current number of ready messages waiting in FIFO queues
+# TYPE wheelmq_ready_messages_total gauge
+wheelmq_ready_messages_total{node="node-1"} 12
+
+# HELP wheelmq_delayed_timers_total Current number of active timing wheel timers
+# TYPE wheelmq_delayed_timers_total gauge
+wheelmq_delayed_timers_total{node="node-1"} 5
+
+# HELP wheelmq_dead_letter_total Current number of failed messages in Dead Letter Queue (DLQ)
+# TYPE wheelmq_dead_letter_total gauge
+wheelmq_dead_letter_total{node="node-1"} 0
+
+# HELP wheelmq_cluster_nodes_total Number of active physical nodes in hash ring
+# TYPE wheelmq_cluster_nodes_total gauge
+wheelmq_cluster_nodes_total{node="node-1"} 3
+```
+
+A pre-built, ready-to-import Grafana dashboard JSON is located at [`deploy/grafana/dashboard.json`](file:///Users/adrian.tucicovencogmail.com/.gemini/antigravity/scratch/wheelmq/deploy/grafana/dashboard.json). Simply import it into your Grafana UI for immediate cluster visualization.
+
 ---
 
 ## ⚡ TCP Wire Protocol & CLI Usage

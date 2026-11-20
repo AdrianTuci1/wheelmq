@@ -107,6 +107,17 @@ int main(void) {
     assert(strstr(http_resp, "\"payload\":\"http_order\"") != NULL);
     printf("  [PASS] HTTP GET /pop consumed task and returned JSON\n");
 
+    // Test HTTP GET /metrics (Prometheus / Grafana scrape format)
+    const char *http_req_metrics = "GET /metrics HTTP/1.1\r\n\r\n";
+    assert(http_parse(http_req_metrics, strlen(http_req_metrics), &parsed_req) == true);
+    http_route(&srv, &parsed_req, http_resp, sizeof(http_resp));
+    assert(strstr(http_resp, "HTTP/1.1 200 OK") != NULL);
+    assert(strstr(http_resp, "wheelmq_up{node=\"node-primary\"} 1") != NULL);
+    assert(strstr(http_resp, "wheelmq_ready_messages_total{node=\"node-primary\"}") != NULL);
+    assert(strstr(http_resp, "wheelmq_delayed_timers_total{node=\"node-primary\"}") != NULL);
+    assert(strstr(http_resp, "wheelmq_dead_letter_total{node=\"node-primary\"}") != NULL);
+    printf("  [PASS] HTTP GET /metrics exported Prometheus format for Grafana\n");
+
     server_destroy(&srv);
     printf("[SUCCESS] All Server & HTTP & Webhook Engine tests passed!\n");
     return 0;
