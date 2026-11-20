@@ -76,7 +76,12 @@ int main(int argc, char *argv[]) {
         struct sockaddr_un un_addr;
         memset(&un_addr, 0, sizeof(un_addr));
         un_addr.sun_family = AF_UNIX;
-        strncpy(un_addr.sun_path, unix_socket, sizeof(un_addr.sun_path) - 1);
+        size_t path_len = strlen(unix_socket);
+        if (path_len >= sizeof(un_addr.sun_path)) {
+            path_len = sizeof(un_addr.sun_path) - 1;
+        }
+        memcpy(un_addr.sun_path, unix_socket, path_len);
+        un_addr.sun_path[path_len] = '\0';
 
         if (connect(sock, (struct sockaddr *)&un_addr, sizeof(un_addr)) < 0) {
             perror("connect(AF_UNIX)");
@@ -108,7 +113,8 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    write(sock, cmd_buf, strlen(cmd_buf));
+    ssize_t w = write(sock, cmd_buf, strlen(cmd_buf));
+    (void)w;
 
     ssize_t n = read(sock, resp_buf, CLI_BUF_SIZE - 1);
     if (n > 0) {

@@ -379,7 +379,12 @@ int server_run(wheelmq_server_t *srv) {
         struct sockaddr_un un_addr;
         memset(&un_addr, 0, sizeof(un_addr));
         un_addr.sun_family = AF_UNIX;
-        strncpy(un_addr.sun_path, srv->unix_socket_path, sizeof(un_addr.sun_path) - 1);
+        size_t path_len = strlen(srv->unix_socket_path);
+        if (path_len >= sizeof(un_addr.sun_path)) {
+            path_len = sizeof(un_addr.sun_path) - 1;
+        }
+        memcpy(un_addr.sun_path, srv->unix_socket_path, path_len);
+        un_addr.sun_path[path_len] = '\0';
 
         if (bind(srv->server_fd, (struct sockaddr *)&un_addr, sizeof(un_addr)) < 0) {
             perror("bind(AF_UNIX)");
@@ -452,7 +457,8 @@ int server_run(wheelmq_server_t *srv) {
         if (n > 0) {
             read_buf[n] = '\0';
             handle_client_command(srv, read_buf, resp_buf, SERVER_IO_BUF_SIZE);
-            write(client_fd, resp_buf, strlen(resp_buf));
+            ssize_t w = write(client_fd, resp_buf, strlen(resp_buf));
+            (void)w;
         }
         close(client_fd);
     }
