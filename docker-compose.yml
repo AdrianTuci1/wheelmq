@@ -2,6 +2,7 @@ version: '3.8'
 
 services:
   wheelmq-1:
+    image: ghcr.io/adriantuci1/wheelmq:latest
     build: .
     container_name: wheelmq-1
     command: ["--id", "node-1", "--bind", "0.0.0.0", "--port", "7000"]
@@ -16,6 +17,7 @@ services:
       - wheelmq-cluster
 
   wheelmq-2:
+    image: ghcr.io/adriantuci1/wheelmq:latest
     build: .
     container_name: wheelmq-2
     command: ["--id", "node-2", "--bind", "0.0.0.0", "--port", "7000", "--peer", "node-1,wheelmq-1,7000"]
@@ -28,6 +30,7 @@ services:
       - wheelmq-cluster
 
   wheelmq-3:
+    image: ghcr.io/adriantuci1/wheelmq:latest
     build: .
     container_name: wheelmq-3
     command: ["--id", "node-3", "--bind", "0.0.0.0", "--port", "7000", "--peer", "node-1,wheelmq-1,7000"]
