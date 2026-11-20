@@ -11,14 +11,23 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 
-#define SERVER_IO_BUF_SIZE 65536 // 64 KB per message buffer
+/**
+ * Socket buffer size for incoming commands and outgoing responses (64 KB).
+ */
+#define SERVER_IO_BUF_SIZE 65536
 
+/**
+ * Get current wall-clock epoch timestamp in milliseconds.
+ */
 static uint64_t get_time_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
 }
 
+/**
+ * Look up an existing queue by name or dynamically initialize a new one.
+ */
 static queue_t *find_or_create_queue(wheelmq_server_t *srv, const char *name) {
     for (size_t i = 0; i < srv->queue_count; i++) {
         if (strcmp(srv->queues[i].name, name) == 0) {
@@ -32,6 +41,10 @@ static queue_t *find_or_create_queue(wheelmq_server_t *srv, const char *name) {
     return q;
 }
 
+/**
+ * Background ticker thread routine.
+ * Ticks the timing wheel every 5ms and moves expired timers to their ready FIFO queue.
+ */
 static void *ticker_routine(void *arg) {
     wheelmq_server_t *srv = (wheelmq_server_t *)arg;
 
@@ -63,7 +76,14 @@ static void *ticker_routine(void *arg) {
     return NULL;
 }
 
-// Helper to extract a whitespace-delimited token
+/**
+ * Extract the next whitespace-delimited token from a string into dst.
+ *
+ * @param src Source string pointer.
+ * @param dst Destination token buffer.
+ * @param dst_max Maximum capacity of destination buffer.
+ * @return Pointer to next character in src, or NULL if end of line reached.
+ */
 static const char *extract_token(const char *src, char *dst, size_t dst_max) {
     while (*src == ' ' || *src == '\t') src++;
     if (*src == '\0' || *src == '\r' || *src == '\n') return NULL;
@@ -79,6 +99,9 @@ static const char *extract_token(const char *src, char *dst, size_t dst_max) {
     return src;
 }
 
+/**
+ * Parse and dispatch a single client wire protocol command.
+ */
 static void handle_client_command(wheelmq_server_t *srv, const char *cmd_line, char *response, size_t resp_max) {
     char cmd[32];
     const char *p = extract_token(cmd_line, cmd, sizeof(cmd));
@@ -102,7 +125,6 @@ static void handle_client_command(wheelmq_server_t *srv, const char *cmd_line, c
         if (!p) {
             snprintf(response, resp_max, "ERR syntax: PUSH <queue> <delay_ms> <payload>\r\n");
         } else {
-            // Remainder of line is the payload (can be arbitrary size, json, etc.)
             while (*p == ' ' || *p == '\t') p++;
             size_t payload_len = 0;
             while (p[payload_len] && p[payload_len] != '\r' && p[payload_len] != '\n') {

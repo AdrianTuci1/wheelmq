@@ -3,7 +3,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-// 64-bit MurmurHash3
+/**
+ * 64-bit MurmurHash3 implementation.
+ *
+ * Algorithm authored by Austin Appleby. Produces exceptional avalanche
+ * behavior and distribution across a 64-bit integer space.
+ */
 uint64_t hashring_hash(const void *key, size_t len, uint64_t seed) {
     const uint8_t *data = (const uint8_t *)key;
     const size_t nblocks = len / 8;
@@ -43,6 +48,9 @@ uint64_t hashring_hash(const void *key, size_t len, uint64_t seed) {
     return h;
 }
 
+/**
+ * Comparator function for qsort to order virtual nodes by their hash point.
+ */
 static int compare_vnodes(const void *a, const void *b) {
     const vnode_t *va = (const vnode_t *)a;
     const vnode_t *vb = (const vnode_t *)b;
@@ -51,6 +59,9 @@ static int compare_vnodes(const void *a, const void *b) {
     return 0;
 }
 
+/**
+ * Reconstruct and re-sort all virtual nodes for all active/alive physical nodes.
+ */
 static void rebuild_vnodes(hashring_t *ring) {
     ring->vnode_count = 0;
 
@@ -86,7 +97,6 @@ int hashring_add_node(hashring_t *ring, const char *id, const char *addr, uint16
 
     for (uint32_t i = 0; i < ring->node_count; i++) {
         if (strncmp(ring->nodes[i].id, id, HASHRING_NODE_ID_LEN) == 0) {
-            // Already exists, reactivate
             ring->nodes[i].is_alive = true;
             strncpy(ring->nodes[i].address, addr, sizeof(ring->nodes[i].address) - 1);
             ring->nodes[i].port = port;
@@ -110,7 +120,6 @@ int hashring_add_node(hashring_t *ring, const char *id, const char *addr, uint16
 bool hashring_remove_node(hashring_t *ring, const char *id) {
     for (uint32_t i = 0; i < ring->node_count; i++) {
         if (strncmp(ring->nodes[i].id, id, HASHRING_NODE_ID_LEN) == 0) {
-            // Shift remaining nodes
             for (uint32_t j = i; j < ring->node_count - 1; j++) {
                 ring->nodes[j] = ring->nodes[j + 1];
             }
@@ -153,7 +162,7 @@ const cluster_node_t *hashring_lookup(const hashring_t *ring, const char *key, s
         }
     }
 
-    // If beyond the end of the ring, wrap around to first vnode (clock ring)
+    // Wrap around to the start of the ring if key_hash is past all points
     if (low == ring->vnode_count) {
         low = 0;
     }

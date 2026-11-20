@@ -4,6 +4,9 @@
 #include <stdio.h>
 #include <time.h>
 
+/**
+ * Return current wall-clock epoch timestamp in milliseconds.
+ */
 static uint64_t get_current_time_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
@@ -47,6 +50,9 @@ void message_free(message_t *msg) {
     free(msg);
 }
 
+/**
+ * Append message to the tail of a doubly linked list in O(1).
+ */
 static void list_push_back(msg_list_t *list, message_t *msg) {
     msg->next = NULL;
     msg->prev = list->tail;
@@ -59,6 +65,9 @@ static void list_push_back(msg_list_t *list, message_t *msg) {
     list->count++;
 }
 
+/**
+ * Pop message from the head of a doubly linked list in O(1).
+ */
 static message_t *list_pop_front(msg_list_t *list) {
     if (!list->head) return NULL;
 
@@ -76,6 +85,9 @@ static message_t *list_pop_front(msg_list_t *list) {
     return msg;
 }
 
+/**
+ * Remove an arbitrary message from a doubly linked list in O(1).
+ */
 static void list_remove(msg_list_t *list, message_t *msg) {
     if (msg->prev) {
         msg->prev->next = msg->next;
@@ -94,6 +106,9 @@ static void list_remove(msg_list_t *list, message_t *msg) {
     list->count--;
 }
 
+/**
+ * Free all messages in a doubly linked list.
+ */
 static void list_clear(msg_list_t *list) {
     message_t *curr = list->head;
     while (curr) {

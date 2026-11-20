@@ -2,6 +2,9 @@
 #include <string.h>
 #include <stdio.h>
 
+/**
+ * Push message to list tail in O(1).
+ */
 static void list_push(msg_list_t *list, message_t *msg) {
     msg->next = NULL;
     msg->prev = list->tail;
@@ -14,6 +17,9 @@ static void list_push(msg_list_t *list, message_t *msg) {
     list->count++;
 }
 
+/**
+ * Pop message from list head in O(1).
+ */
 static message_t *list_pop(msg_list_t *list) {
     if (!list->head) return NULL;
     message_t *msg = list->head;
@@ -62,11 +68,21 @@ void wheel_destroy(timing_wheel_t *wheel) {
     wheel->total_timer_count = 0;
 }
 
+/**
+ * Map a message's target expiration delta to the correct hierarchical wheel level.
+ *
+ * Implements the Varghese-Lauck multi-tier timer allocation algorithm:
+ * - Delta < 256ms   -> Wheel 0 (bits 0..7)
+ * - Delta < 16.38s  -> Wheel 1 (bits 8..13)
+ * - Delta < 17.47m  -> Wheel 2 (bits 14..19)
+ * - Delta < 18.64h  -> Wheel 3 (bits 20..25)
+ * - Delta < 49.7d   -> Wheel 4 (bits 26..31)
+ */
 static void internal_add(timing_wheel_t *wheel, message_t *msg) {
     uint64_t expires = msg->scheduled_at_ms;
 
     if (expires <= wheel->current_time_ms) {
-        // Due immediately, place in current slot of wheel 0
+        // Expired or due immediately: place in the current slot of wheel 0
         uint32_t idx = wheel->current_time_ms & WHEEL_MASK_0;
         list_push(&wheel->wheel0[idx], msg);
         return;
@@ -97,6 +113,9 @@ void wheel_add(timing_wheel_t *wheel, message_t *msg) {
     wheel->total_timer_count++;
 }
 
+/**
+ * Cascade timers from an upper wheel level down to lower wheel levels.
+ */
 static void cascade(timing_wheel_t *wheel, msg_list_t *source_slot) {
     message_t *msg = list_pop(source_slot);
     while (msg) {
@@ -127,10 +146,12 @@ size_t wheel_advance(timing_wheel_t *wheel, uint64_t now_ms, msg_list_t *expired
                 uint32_t idx2 = (wheel->current_time_ms >> 14) & WHEEL_MASK_N;
                 cascade(wheel, &wheel->wheel2[idx2]);
 
+                // When wheel2 wraps, cascade from wheel3
                 if (idx2 == 0) {
                     uint32_t idx3 = (wheel->current_time_ms >> 20) & WHEEL_MASK_N;
                     cascade(wheel, &wheel->wheel3[idx3]);
 
+                    // When wheel3 wraps, cascade from wheel4
                     if (idx3 == 0) {
                         uint32_t idx4 = (wheel->current_time_ms >> 26) & WHEEL_MASK_N;
                         cascade(wheel, &wheel->wheel4[idx4]);
@@ -139,7 +160,7 @@ size_t wheel_advance(timing_wheel_t *wheel, uint64_t now_ms, msg_list_t *expired
             }
         }
 
-        // Collect all timers in wheel0[idx0]
+        // Collect all timers in wheel0[idx0] that are now expired
         message_t *msg = list_pop(&wheel->wheel0[idx0]);
         while (msg) {
             list_push(expired_out, msg);
